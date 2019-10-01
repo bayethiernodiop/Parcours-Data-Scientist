@@ -125,7 +125,7 @@ def columns_filling_rate(dataframe, columns='all', missing_only=False):
 
         # Computing filling rates
         filling_rate = values_count / nb_rows
-        if missing_only and filling_rate == 1:
+        if missing_only and missing_values == 0:
             filling_rate = np.nan
         
         # Adding a row in the results' dataframe
@@ -135,7 +135,10 @@ def columns_filling_rate(dataframe, columns='all', missing_only=False):
     results = results.dropna(subset=['filling_rate'])
     results = results.sort_values('filling_rate')
     
-    return results
+    if results.empty == False:
+        return results
+    else:
+        print("No missing value.")
 
 #-----------------------------------------------------------------------
 def categorical_matrix(dataframe, theil_u=True, return_results=False):
@@ -167,65 +170,98 @@ def categorical_matrix(dataframe, theil_u=True, return_results=False):
     if return_results:
         return corr
 
+    
 #-----------------------------------------------------------------------
 def smart_imputation(dataframe):
     """Do column-wise imputation based on the dtypes."""
     
     # Load libraries
     import pandas as pd
-    from sklearn.impute import SimpleImputer
     from sklearn.experimental import enable_iterative_imputer
     from sklearn.impute import IterativeImputer
-    from sklearn.compose import ColumnTransformer
+    from sklearn.neighbors import KNeighborsClassifier
+    from sklearn.neighbors import KNeighborsRegressor
+    from sklearn.preprocessing import StandardScaler
     
-    # Getting data types of features
+    # Getting names of columns based on data types
     categorical_features = list(dataframe.select_dtypes(include=['category']).columns)
+    boolean_features = list(dataframe.select_dtypes(include=['bool']).columns)
     numerical_features = list(dataframe.select_dtypes(include='number').columns)
+    datetime_features = list(dataframe.select_dtypes(include='datetime').columns)
+    timedelta_features = list(dataframe.select_dtypes(include='timedelta').columns)
+    object_features = list(dataframe.select_dtypes(include='object').columns)
     
-    #------------------------------------------
-    # Simple imputation for categorical features
-    categorical_imputer = SimpleImputer(
-        strategy='constant',
-        fill_value='missing',
-    )
+    # Make a copy for proceeding imputation on
+    df = dataframe.copy()
+    
+    #-----------------------------------------------------------------------
+    # Imputation of numerical features
         
-    # Iterative imputation for numerical features
-    numerical_imputer = IterativeImputer(
-        max_iter=10,
-        # random_state=42,
-        add_indicator=False,
-    )
+    # Proceed to imputation for ALL quantitative features
+    # Do not work well on timeseries… (impute negative values)
+    numerical_imputer = IterativeImputer()
+    df[numerical_features] = numerical_imputer.fit_transform(df[numerical_features])
+    
+    #-----------------------------------------------------------------------
+    # Imputation of timeseries features with a kNN regressor
+    
+    # Conversion of timeseries features to integers
+    timeseries_features = datetime_features + timedelta_features
+    df[timeseries_features] = df[datetime_features].values.astype('int64')
+    
+    # Standardization of the numerical features
+    standardizer = StandardScaler()
+    df_std = standardizer.fit_transform(df[numerical_features])
+    
+    # Train a kNN regressor model for each categorical feature
+    for feature in timeseries_features:
+        # filter the non-missing data
+        mask = df[feature].notnull()
+        # proceed imputation only if there is missing-data
+        if not mask.all():
+            # filter the data for training
+            X_std = df_std[mask]
+            y = df.loc[mask, feature]
+            # train the model
+            knn = KNeighborsRegressor(n_neighbors=5, n_jobs=-1).fit(X_std, y)
+            # predict the missing data for missing data
+            X_mis = df_std[~mask]
+            df.loc[~mask, feature] = knn.predict(X_mis)
 
-    # Column-wise differentiate imputation for numeric and categorical features
-    smart_imputer = ColumnTransformer(transformers=[
-            ('categorical_imputer', categorical_imputer, categorical_features),
-            ('numerical_imputer', numerical_imputer, numerical_features)
-    ])
+    #-----------------------------------------------------------------------
+    # Imputation of categorical features with a kNN classifier
+    
+    # Standardization of the numerical features
+    standardizer = StandardScaler()
+    quantitative_features = numerical_features + timeseries_features
+    df_std = standardizer.fit_transform(df[quantitative_features])
+    
+    # Train a kNN classifier model for each categorical feature
+    for feature in categorical_features:
+        # filter the non-missing data
+        mask = df[feature].notnull()
+        # proceed imputation only if there is missing-data
+        if not mask.all():
+            # filter the data for training
+            X_std = df_std[mask]
+            y = df.loc[mask, feature]
+            # train the model
+            knn = KNeighborsClassifier(n_neighbors=5, n_jobs=-1).fit(X_std, y)
+            # predict the missing data for missing data
+            X_mis = df_std[~mask]
+            df.loc[~mask, feature] = knn.predict(X_mis)
     
     #------------------------------------------
-    # Proceed to imputation (returns a np.array)
-    array_imputed = smart_imputer.fit_transform(dataframe)
     
-    # Convert back to a pd.DataFrame
-    name_columns_imputed = categorical_features + numerical_features
-    columns_imputed = pd.DataFrame(array_imputed, columns=name_columns_imputed)
-    
-    # Getting the non-imputed colums
-    columns_not_imputed = dataframe.select_dtypes(exclude=['number', 'bool', 'category'])
-    
-    # Concatenating imputed and non-imputed columns
-    df_imputed = pd.concat([columns_imputed, columns_not_imputed], sort=True, axis=1)
-    
-    # Getting dtypes of numerical features in the original dataframe
-    dtypes_dict = dict(dataframe[numerical_features].dtypes)
-    
-    # Change dtypes to fit the original dtypes
-    df_imputed[categorical_features] = df_imputed[categorical_features].astype(dtype='category')
-    df_imputed[numerical_features] = df_imputed[numerical_features].astype(dtype=dtypes_dict)
-    
+    # Reverse dtypes for timeseries
+    for feature in datetime_features:
+        df[feature] = pd.to_datetime(df[feature])
+        
+    for feature in timedelta_features:
+        df[feature] = pd.to_timedelta(df[feature]) 
    
-    # Return a dataframe with imputed and non-imputed columns
-    return df_imputed
+    # Return the imputed dataframe
+    return df
 
 #-----------------------------------------------------------------------
 def find_colinear_features(corrs, threshold=0.8, target_name='TARGET'):
@@ -327,42 +363,6 @@ def PCA_features_reduction(X_std, var_threshold=0.9):
 
 
 #------------------------------------------------------------------------
-def convert_timeseries_to_float(dataframe):
-    import datetime
-    import numpy as np
-
-    df = dataframe.copy()
-    
-    # Get 'timedelta' and 'datetime' features
-    timedelta_features = list(df.select_dtypes('timedelta').columns)
-    datetime_features = list(df.select_dtypes('datetime').columns)
-
-    # Iterating over 'timedelta' features
-    for feature in timedelta_features:
-        # converting NaT to NaN
-        df[feature] = df[feature].fillna(np.nan)
-        # filtering off the missing values
-        mask = df[feature].notnull()
-        # Convert 'timedelta' features to float
-        df.loc[mask, feature]  = dataframe[feature][mask]  / datetime.timedelta(days=1)
-        # dataframe[feature] = dataframe[feature].total_seconds()
-        # Converting dtype of the column
-        # df[feature] = df[feature].astype(float)
-
-    # Iterating over 'datetime' features
-    for feature in datetime_features:
-        # converting NaT to NaN
-        df[feature] = df[feature].fillna(np.nan)
-        # filtering off the missing values
-        mask = df[feature].notnull() # pd.Series of boolean
-        # Convert 'datetime' values to float
-        df.loc[mask, feature] = dataframe[feature][mask].map(lambda x: x.timestamp())
-        # Converting dtype of the column
-        # df[feature] = df[feature].astype(float)
-
-    return df
-
-#------------------------------------------------------------------------
 def get_feature_names(columnTransformer):
     """This function returns features names from a 
     ColumnTransformer object, to keep track of featurse names."""
@@ -439,7 +439,7 @@ def define_preprocessor(dataframe, supervised=False):
     
     # Preprocessing pipeline for numeric features
     numeric_transformer = Pipeline(steps=[
-            ('imputer', IterativeImputer(max_iter=10)), # iterative imputation
+            # ('imputer', IterativeImputer(max_iter=10)), # iterative imputation
             ('scaler', StandardScaler()), # standardization
              ])
     
@@ -450,9 +450,9 @@ def define_preprocessor(dataframe, supervised=False):
 
     # Column-wise preprocessor using pipelines for numeric and categorical features
     preprocessor = ColumnTransformer(transformers=[
-            ('cat', categorical_transformer, list(dataframe.select_dtypes(include=['category', 'bool']).columns)),
+            # ('cat', categorical_transformer, list(dataframe.select_dtypes(include=['category', 'bool']).columns)),
             ('num', numeric_transformer, list(dataframe.select_dtypes(include='number', exclude=['datetime', 'timedelta']).columns)),
-            ('obj', other_transformer, list(dataframe.select_dtypes(include=['object', 'datetime', 'timedelta']).columns)),
+            # ('obj', other_transformer, list(dataframe.select_dtypes(include=['object', 'datetime', 'timedelta']).columns)),
             ])
     
     return preprocessor
@@ -493,6 +493,9 @@ def preprocessing(dataframe, target_name='TARGET', supervised=False):
     # Function to revert a np.ndarray to pd.DataFrame with columns names
     def revert_to_df(X_preprocessed, preprocessor):
         features_name = get_feature_names(preprocessor)
+        print(len(features_name))
+        print(features_name)
+        print(X_preprocessed.shape)
         X_preprocessed = pd.DataFrame(X_preprocessed, columns=features_name)
         return X_preprocessed
         
@@ -521,7 +524,9 @@ def preprocessing(dataframe, target_name='TARGET', supervised=False):
         return (X_preprocessed, y_preprocessed)
     
     else:
+        print("Shape of X:", X.shape)
         X_preprocessed = preprocessor.fit_transform(X)
+        print("Shape of X_preprocessed:", X_preprocessed.shape)
         X_preprocessed = revert_to_df(X_preprocessed, preprocessor)
         return X_preprocessed
     
@@ -621,3 +626,138 @@ def IQR_outliers_mask(Series):
     
     # return the mask of outliers
     return mask
+
+#-----------------------------------------------------------------
+def categorical_distribution(dataframe,feature):
+    """Function plotting the bar-plot and pie-plot (as subplots) for 
+    a distribution of categorical features."""
+    
+    # importing libraries
+    import matplotlib.pyplot as plt
+
+    # filtering non-null data for the feature
+    mask = dataframe[feature].notnull()
+    data_view = dataframe[mask]
+    
+    # Setting the data to plot
+    x=data_view[feature]
+    
+    # Set frequencies and labels, sorting by index
+    labels = list(x.value_counts().sort_index().index.astype(str))
+    frequencies = x.value_counts().sort_index()
+    
+    # Graphical properties of the main figure
+    fig = plt.figure(figsize=(14, 6))
+    
+    plt.suptitle("Empiric statistical distribution: " + feature, fontsize=25)
+    
+    # Main graphical properties of the first subplot (histogram)
+    ax1 = plt.subplot(121)
+    ax1.set_xlabel("Values", fontsize=20)
+    ax1.set_ylabel("Frequencies", fontsize=20)
+    ax1.set_xticklabels(labels, rotation='45', horizontalalignment="right")
+
+    # Main graphical properties of the second subplot (pieplot)
+    ax2 = plt.subplot(122)
+    ax2.set_xlabel("Relative frequencies", fontsize=20)
+    
+    # plotting the plots
+    ax1.bar(labels, frequencies)
+    ax2.pie(frequencies,
+            autopct='%1.2f%%',
+            shadow=True,
+              )
+    
+    ax2.legend(labels)
+    plt.show()
+    return fig
+
+
+#-------------------------------------------------------
+def rows_fillingrate_histogram(dataframe):
+    """This function plots an histogram of the distribution of the 
+    filling rate for the rows of a dataframe."""
+
+    # Import libraries
+    import matplotlib.ticker as ticker
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Count the non-null values on each row
+    row_count = dataframe.count(axis=1)
+
+    # Calculating filling rates
+    nb_columns = dataframe.shape[1]
+    filling_rates_row = row_count / nb_columns
+
+    # Plotting histogramm
+    fig, ax = plt.subplots(figsize=(20, 10))
+    plt.title("Rows' filling rate distribution", fontsize=25)
+    plt.xlabel("Filling rate", fontsize=15)
+    plt.ylabel("Frequency", fontsize=15)
+    ax.xaxis.set_major_formatter(ticker.PercentFormatter(xmax=1))
+    bins = np.linspace(0, 1, num=51)
+    ax.hist(filling_rates_row, bins=bins)
+    ax.xaxis.set_major_locator(plt.MaxNLocator(11))
+    plt.show()
+    
+#-------------------------------------------------------
+def fillingrate_filter_rows(dataframe, limit_rate):
+    """This function drop the rows where the filling rate is less than a defined limit rate."""
+
+    # Count of the values on each row
+    rows_count = dataframe.count(axis=1)
+
+    # Number of columns in the dataframe
+    nb_columns = dataframe.shape[1]
+    
+    # Calculating filling rates
+    filling_rates = rows_count / nb_columns
+
+    # Define a mask of features with a filling_rate bigger than the limit rate
+    mask = filling_rates > limit_rate
+       
+    # Get the number of rows under threshold
+    number_rows_under_limit_rate = len(filling_rates[~mask])
+    print("Number of rows with a filling rate below {:.2%}: {} rows.".format(limit_rate, number_rows_under_limit_rate))
+
+    # Return a projection on the selection of features
+    return dataframe[mask]
+
+#-------------------------------------------------------
+def empirical_distribution(dataframe, feature):
+    """Function plotting the bar plot and a boxplot (as subplots) for a distribution."""
+    
+    # Loading libraries
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    # filtering non-null data
+    mask = dataframe[feature].notnull()
+    data_view = dataframe[mask]
+    
+    # Setting the data to plot
+    x = data_view[feature]
+    
+    # Create a figure instance, and the two subplots
+    fig = plt.figure(figsize=(20, 10))
+    plt.suptitle("Statistical distribution: " + feature, fontsize=25)
+    ax1 = fig.add_subplot(211) # histogram
+    ax2 = fig.add_subplot(212) # boxplot
+
+    # Tell distplot to plot on ax1 with the ax argument
+    sns.distplot(x, ax=ax1)
+    ax1.set_ylabel("Frequency", fontsize=20)
+    ax1.set_xlabel("")
+
+    # Tell the boxplot to plot on ax2 with the ax argument
+    medianprops = {'color':"black"}
+    meanprops = {'marker':'o', 'markeredgecolor':'black', 'markerfacecolor':'firebrick'}
+    sns.boxplot(x,
+                ax=ax2,
+                showfliers=True,
+                medianprops=medianprops,
+                showmeans=True,
+                meanprops=meanprops)
+    ax2.set_xlabel("Value", fontsize=20)
+    return fig
