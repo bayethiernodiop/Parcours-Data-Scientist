@@ -628,7 +628,7 @@ def IQR_outliers_mask(Series):
     return mask
 
 #-----------------------------------------------------------------
-def categorical_distribution(dataframe,feature):
+def categorical_distribution(dataframe, feature, ordinal=False):
     """Function plotting the bar-plot and pie-plot (as subplots) for 
     a distribution of categorical features."""
     
@@ -643,8 +643,12 @@ def categorical_distribution(dataframe,feature):
     x=data_view[feature]
     
     # Set frequencies and labels, sorting by index
-    labels = list(x.value_counts().sort_index().index.astype(str))
-    frequencies = x.value_counts().sort_index()
+    if ordinal==True:
+        labels = list(x.value_counts().sort_index().index.astype(str))
+        frequencies = x.value_counts().sort_index()
+    else:
+        labels = list(x.value_counts().sort_values(ascending=False).index.astype(str))
+        frequencies = x.value_counts().sort_values(ascending=False)
     
     # Graphical properties of the main figure
     fig = plt.figure(figsize=(14, 6))
@@ -760,4 +764,46 @@ def empirical_distribution(dataframe, feature):
                 showmeans=True,
                 meanprops=meanprops)
     ax2.set_xlabel("Value", fontsize=20)
+    return fig
+
+#-------------------------------------------------------
+def discrete_distribution(dataframe, feature):
+    """Function plotting the bar plot and a boxplot (as subplots) for a distribution."""
+    
+    # Loading libraries
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    # filtering non-null data
+    mask = dataframe[feature].notnull()
+    data_view = dataframe[mask]
+    
+    # Setting the data to plot
+    x = data_view[feature]
+    
+    # Create a figure instance, and the two subplots
+    fig = plt.figure(figsize=(20, 10))
+    plt.suptitle("Statistical distribution: " + feature, fontsize=25)
+    ax1 = fig.add_subplot(211) # histogram
+    # ax2 = fig.add_subplot(312) # kde
+    ax3 = fig.add_subplot(212) # boxplot
+
+    # Tell distplot to plot on ax1 with the ax argument
+    ax2 = ax1.twinx()
+    sns.distplot(x, kde=False, ax=ax1)
+    sns.distplot(x, hist=False, ax=ax2, kde_kws={'bw':1})
+    
+    ax1.set_ylabel("Frequency", fontsize=20)
+    ax1.set_xlabel("")
+
+    # Tell the boxplot to plot on ax2 with the ax argument
+    medianprops = {'color':"black"}
+    meanprops = {'marker':'o', 'markeredgecolor':'black', 'markerfacecolor':'firebrick'}
+    sns.boxplot(x,
+                ax=ax3,
+                showfliers=True,
+                medianprops=medianprops,
+                showmeans=True,
+                meanprops=meanprops)
+    ax3.set_xlabel("Value", fontsize=20)
     return fig
