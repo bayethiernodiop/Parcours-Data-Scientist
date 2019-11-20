@@ -12,11 +12,16 @@ import sklearn
 import joblib
 
 
-# Load data from loans applications
+# Load data test from loans applications
 dir_name = '../data/cleaned'
 file_name = 'data_test.csv'
 file_path = os.path.join(dir_name, file_name)
 data_test = pd.read_csv(file_path, index_col='SK_ID_CURR')
+
+# Load data train from loans applications
+file_name = 'data_train.csv'
+file_path = os.path.join(dir_name, file_name)
+data_train = pd.read_csv(file_path, index_col='SK_ID_CURR')
 
 # Load the model
 scikit_version = sklearn.__version__
@@ -73,6 +78,22 @@ def meteo():
         'data': data
     })
 
+@app.route('/api/sk_ids/')
+# Test : http://127.0.0.1:5000/api/sk_ids/
+def sk_ids():
+    # Extract list of 'SK_ID_CURR' from the DataFrame
+    sk_ids = list(data_test.index)[:50]
+
+    # Convering to JSON
+    sk_ids_json = json.dumps(sk_ids)
+
+    # Returning the processed data
+    return jsonify({
+        'status': 'ok',
+        'data': sk_ids #sk_ids_json
+     })
+
+
 @app.route('/api/personal_data/')
 # Test : http://127.0.0.1:5000/api/personal_data?SK_ID_CURR=100001
 def personal_data():
@@ -82,13 +103,33 @@ def personal_data():
     # Getting the personal data for the applicant (pd.Series)
     personal_data = data_test.loc[SK_ID_CURR, :]
 
-    # Converting the pd.Series to dict
-    personal_data = personal_data.to_json()
+    # Converting the pd.Series to JSON
+    personal_data_json = json.loads(personal_data.to_json())
+    
 
     # Returning the processed data
     return jsonify({
         'status': 'ok',
-        'data': personal_data
+        'data': personal_data_json
+     })
+
+
+@app.route('/api/aggregations/')
+# Test : http://127.0.0.1:5000/api/aggregations
+def aggregations():
+
+    # Aggregate the data from loan applications
+    data_agg_num = data_train.mean(numeric_only=True)
+    data_agg_cat = data_train.select_dtypes(exclude='number').mode().iloc[0]
+    data_agg = pd.concat([data_agg_num, data_agg_cat])
+
+    # Converting the pd.DataFrame to JSON
+    data_agg_json = json.loads(data_agg.to_json())
+    
+    # Returning the processed data
+    return jsonify({
+        'status': 'ok',
+        'data': data_agg_json
      })
 
 @app.route('/api/scoring/')
